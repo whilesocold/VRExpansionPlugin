@@ -5,10 +5,10 @@
 #include "CanvasTypes.h"
 #include "SceneManagement.h"
 //#include "UObject/Field.h"
-#include "VRBPDatatypes.h"
 #include "ScopedTransaction.h"
 #include "Modules/ModuleManager.h"
 #include "EditorViewportClient.h"
+#include "VRBPDatatypes.h"
 #include "Components/PoseableMeshComponent.h"
 #include "Misc/PackageName.h"
 //#include "Persona.h"
@@ -211,15 +211,15 @@ void FHandSocketVisualizer::DrawVisualization(const UActorComponent* Component, 
 					}
 				}
 
-				if (HandComponent->BonesToSkip.Contains(BoneName))
-				{
-					// Skip visualizing this bone as its in the ignore array
-					continue;
-				}
+			    if (HandComponent->BonesToSkip.Contains(BoneName))
+			    {
+			        // Skip visualizing this bone as its in the ignore array
+			        continue;
+			    }
 
-				FTransform BoneTransform = HandComponent->HandVisualizerComponent->GetBoneTransform(i);
-				FVector BoneLoc = BoneTransform.GetLocation();
-				BoneScale = 1.0f - ((View->ViewLocation - BoneLoc).SizeSquared() / FMath::Square(100.0f));
+			    const FTransform BoneTransform = HandComponent->HandVisualizerComponent->GetBoneTransformByName(BoneName, EBoneSpaces::WorldSpace);
+			    const FVector BoneLoc = BoneTransform.GetLocation();
+			    BoneScale = 1.0f - ((View->ViewLocation - BoneLoc).SizeSquared() / FMath::Square(100.0f));
 				BoneScale = FMath::Clamp(BoneScale, 0.1f, 0.9f);
 				newHitProxy = new HHandSocketVisProxy(Component);
 				newHitProxy->TargetBoneName = BoneName;
