@@ -36,8 +36,11 @@ UVRSliderComponent::UVRSliderComponent(const FObjectInitializer& ObjectInitializ
 
 	MinSlideDistance = FVector::ZeroVector;
 	MaxSlideDistance = FVector(10.0f, 0.f, 0.f);
+	SliderBehaviorWhenReleased = EVRInteractibleSliderDropBehavior::Stay;
+	SliderReturnToRestSpeed = 8.0f;
 	SliderRestitution = 0.0f;
 	CurrentSliderProgress = 0.0f;
+	RestingSliderProgress = 0.0f;
 	LastSliderProgress = FVector::ZeroVector;//0.0f;
 	SplineLastSliderProgress = 0.0f;
 	
@@ -141,6 +144,7 @@ void UVRSliderComponent::BeginPlay()
 	Super::BeginPlay();
 
 	CalculateSliderProgress();
+	RestingSliderProgress = CurrentSliderProgress;
 
 	bOriginalReplicatesMovement = bReplicateMovement;
 }
@@ -180,7 +184,22 @@ void UVRSliderComponent::TickComponent(float DeltaTime, enum ELevelTick TickType
 
 	if (bIsLerping)
 	{
-		if ((SplineComponentToFollow && FMath::IsNearlyZero((SplineMomentumAtDrop * DeltaTime), 0.00001f)) || (!SplineComponentToFollow && (MomentumAtDrop * DeltaTime).IsNearlyZero(0.00001f)))
+		if (SliderBehaviorWhenReleased == EVRInteractibleSliderDropBehavior::ReturnToRest)
+		{
+			const float TargetProgress = FMath::Clamp(RestingSliderProgress, 0.0f, 1.0f);
+			const float NewProgress = SliderReturnToRestSpeed > 0.0f
+				                          ? FMath::FInterpConstantTo(CurrentSliderProgress, TargetProgress, DeltaTime, SliderReturnToRestSpeed)
+				                          : TargetProgress;
+
+			this->SetSliderProgress(NewProgress);
+
+			if (FMath::IsNearlyEqual(CurrentSliderProgress, TargetProgress, 0.00001f))
+			{
+				this->SetSliderProgress(TargetProgress);
+				bIsLerping = false;
+			}
+		}
+		else if ((SplineComponentToFollow && FMath::IsNearlyZero((SplineMomentumAtDrop * DeltaTime), 0.00001f)) || (!SplineComponentToFollow && (MomentumAtDrop * DeltaTime).IsNearlyZero(0.00001f)))
 		{
 			bIsLerping = false;
 		}
@@ -534,18 +553,26 @@ void UVRSliderComponent::OnGripRelease_Implementation(UGripMotionControllerCompo
 		bIsLerping = true;
 		this->SetComponentTickEnabled(true);
 
-		FVector Len = (MinSlideDistance.GetAbs() + MaxSlideDistance.GetAbs());
-		if(bSlideDistanceIsInParentSpace)
-			Len *= (FVector(1.0f) / InitialRelativeTransform.GetScale3D());
-
-		float TotalDistance = Len.Size();		
-
-		if (!SplineComponentToFollow)
+		if (SliderBehaviorWhenReleased == EVRInteractibleSliderDropBehavior::RetainMomentum)
 		{
-			if (MaxSliderMomentum * TotalDistance < MomentumAtDrop.Size())
+			FVector Len = (MinSlideDistance.GetAbs() + MaxSlideDistance.GetAbs());
+			if(bSlideDistanceIsInParentSpace)
+				Len *= (FVector(1.0f) / InitialRelativeTransform.GetScale3D());
+
+			float TotalDistance = Len.Size();
+
+			if (!SplineComponentToFollow)
 			{
-				MomentumAtDrop = MomentumAtDrop.GetSafeNormal() * (TotalDistance * MaxSliderMomentum);
+				if (MaxSliderMomentum * TotalDistance < MomentumAtDrop.Size())
+				{
+					MomentumAtDrop = MomentumAtDrop.GetSafeNormal() * (TotalDistance * MaxSliderMomentum);
+				}
 			}
+		}
+		else
+		{
+			MomentumAtDrop = FVector::ZeroVector;
+			SplineMomentumAtDrop = 0.0f;
 		}
 
 		if(MovementReplicationSetting != EGripMovementReplicationSettings::ForceServerSideMovement)
@@ -918,6 +945,8 @@ void UVRSliderComponent::SetSplineComponentToFollow(USplineComponent * SplineToF
 		ResetToParentSplineLocation();
 	else
 		CalculateSliderProgress();
+
+	RestingSliderProgress = CurrentSliderProgress;
 }
 
 void UVRSliderComponent::ResetInitialSliderLocation()
@@ -933,6 +962,8 @@ void UVRSliderComponent::ResetInitialSliderLocation()
 
 	if (SplineComponentToFollow == nullptr)
 		CurrentSliderProgress = GetCurrentSliderProgress(FVector(0, 0, 0));
+
+	RestingSliderProgress = CurrentSliderProgress;
 }
 
 void UVRSliderComponent::ResetToParentSplineLocation()

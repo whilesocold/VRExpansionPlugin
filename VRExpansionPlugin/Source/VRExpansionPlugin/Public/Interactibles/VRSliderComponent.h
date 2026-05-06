@@ -29,7 +29,10 @@ enum class EVRInteractibleSliderDropBehavior : uint8
 	Stay,
 
 	/** Retains momentum on release*/
-	RetainMomentum
+	RetainMomentum,
+
+	/** Returns to its initial resting position on release */
+	ReturnToRest
 };
 
 /** Delegate for notification when the slider state changes. */
@@ -79,6 +82,14 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRSliderComponent")
 		EVRInteractibleSliderDropBehavior SliderBehaviorWhenReleased;
+
+	// Speed, in normalized slider progress per second, to return to the initial resting position.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRSliderComponent|Return Settings", meta = (ClampMin = "0.0", UIMin = "0.0"))
+		float SliderReturnToRestSpeed;
+
+	// Progress value captured from the initial resting position.
+	UPROPERTY(BlueprintReadOnly, Category = "VRSliderComponent|Return Settings")
+		float RestingSliderProgress;
 
 	// Number of frames to average momentum across for the release momentum (avoids quick waggles)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRSliderComponent|Momentum Settings", meta = (ClampMin = "0", ClampMax = "12", UIMin = "0", UIMax = "12"))
@@ -213,7 +224,7 @@ public:
 	UFUNCTION()
 	virtual void OnRep_InitialRelativeTransform()
 	{
-		CalculateSliderProgress();
+		RestingSliderProgress = CalculateSliderProgress();
 	}
 
 	FVector InitialInteractorLocation;
