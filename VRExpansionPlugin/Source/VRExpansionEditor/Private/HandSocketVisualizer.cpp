@@ -11,10 +11,127 @@
 #include "EditorViewportClient.h"
 #include "Components/PoseableMeshComponent.h"
 #include "Misc/PackageName.h"
+#include "UObject/UnrealType.h"
 //#include "Persona.h"
 
 IMPLEMENT_HIT_PROXY(HHandSocketVisProxy, HComponentVisProxy);
 #define LOCTEXT_NAMESPACE "HandSocketVisualizer"
+
+namespace
+{
+bool TryApplyExtendedPoseDelta(
+	UHandSocketComponent* Component,
+	FName BoneName,
+	const FQuat& DeltaRotate,
+	const FVector& DeltaTranslate
+)
+{
+	if (!Component || BoneName == NAME_None)
+	{
+		return false;
+	}
+
+	FArrayProperty* ExtendedDeltasProperty = FindFProperty<FArrayProperty>(
+		Component->GetClass(),
+		TEXT("CustomPoseDeltasExtended")
+	);
+	if (!ExtendedDeltasProperty)
+	{
+		return false;
+	}
+
+	FStructProperty* DeltaStructProperty = CastField<FStructProperty>(ExtendedDeltasProperty->Inner);
+	if (!DeltaStructProperty || !DeltaStructProperty->Struct)
+	{
+		return false;
+	}
+
+	FNameProperty* BoneNameProperty = FindFProperty<FNameProperty>(DeltaStructProperty->Struct, TEXT("BoneName"));
+	FStructProperty* RotationProperty = FindFProperty<FStructProperty>(DeltaStructProperty->Struct, TEXT("Rotation"));
+	FStructProperty* TranslationProperty = FindFProperty<FStructProperty>(DeltaStructProperty->Struct, TEXT("Translation"));
+	if (!BoneNameProperty || !RotationProperty || !TranslationProperty)
+	{
+		return false;
+	}
+
+	if (
+		RotationProperty->Struct != TBaseStructure<FRotator>::Get() ||
+		TranslationProperty->Struct != TBaseStructure<FVector>::Get()
+	)
+	{
+		return false;
+	}
+
+	void* ArrayContainer = ExtendedDeltasProperty->ContainerPtrToValuePtr<void>(Component);
+	FScriptArrayHelper ArrayHelper(ExtendedDeltasProperty, ArrayContainer);
+
+	auto ApplyDeltaToEntry = [&](void* EntryPtr)
+	{
+		FRotator* RotationPtr = RotationProperty->ContainerPtrToValuePtr<FRotator>(EntryPtr);
+		FVector* TranslationPtr = TranslationProperty->ContainerPtrToValuePtr<FVector>(EntryPtr);
+		if (!RotationPtr || !TranslationPtr)
+		{
+			return;
+		}
+
+		if (!DeltaRotate.IsIdentity())
+		{
+			FQuat UpdatedRotation = DeltaRotate * RotationPtr->Quaternion();
+			UpdatedRotation.Normalize();
+			*RotationPtr = UpdatedRotation.Rotator();
+		}
+
+		if (!DeltaTranslate.IsNearlyZero())
+		{
+			*TranslationPtr += DeltaTranslate;
+		}
+	};
+
+	for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+	{
+		void* EntryPtr = ArrayHelper.GetRawPtr(Index);
+		if (!EntryPtr)
+		{
+			continue;
+		}
+
+		FName* EntryBoneNamePtr = BoneNameProperty->ContainerPtrToValuePtr<FName>(EntryPtr);
+		if (!EntryBoneNamePtr || *EntryBoneNamePtr != BoneName)
+		{
+			continue;
+		}
+
+		ApplyDeltaToEntry(EntryPtr);
+		return true;
+	}
+
+	ArrayHelper.AddValues(1);
+	void* NewEntryPtr = ArrayHelper.GetRawPtr(ArrayHelper.Num() - 1);
+	if (!NewEntryPtr)
+	{
+		return false;
+	}
+
+	FName* NewEntryBoneNamePtr = BoneNameProperty->ContainerPtrToValuePtr<FName>(NewEntryPtr);
+	if (!NewEntryBoneNamePtr)
+	{
+		return false;
+	}
+
+	*NewEntryBoneNamePtr = BoneName;
+	if (FRotator* RotationPtr = RotationProperty->ContainerPtrToValuePtr<FRotator>(NewEntryPtr))
+	{
+		*RotationPtr = FRotator::ZeroRotator;
+	}
+	if (FVector* TranslationPtr = TranslationProperty->ContainerPtrToValuePtr<FVector>(NewEntryPtr))
+	{
+		*TranslationPtr = FVector::ZeroVector;
+	}
+
+	ApplyDeltaToEntry(NewEntryPtr);
+	return true;
+}
+} // namespace
 
 bool FHandSocketVisualizer::VisProxyHandleClick(FEditorViewportClient* InViewportClient, HComponentVisProxy* VisProxy, const FViewportClick& Click)
 {
@@ -173,22 +290,29 @@ void FHandSocketVisualizer::DrawVisualization(const UActorComponent* Component, 
 		//This is an editor only uproperty of our targeting component, that way we can change the colors if we can't see them against the background
 		const FLinearColor SelectedColor = FLinearColor::Yellow;//TargetingComponent->EditorSelectedColor;
 		const FLinearColor UnselectedColor = FLinearColor::White;//TargetingComponent->EditorUnselectedColor;
+		const auto ComputeHandleSize = [View](const FVector& InLocation, float BaseSize, float MinScale = 0.6f, float MaxScale = 1.0f)
+		{
+			const float Distance = FVector::Dist(View->ViewLocation, InLocation);
+			const float DistanceAlpha = FMath::Clamp(Distance / 2500.0f, 0.0f, 1.0f);
+			const float Scale = FMath::Lerp(MaxScale, MinScale, DistanceAlpha);
+			return BaseSize * Scale;
+		};
+
 		const FVector Location = HandComponent->HandVisualizerComponent->GetComponentLocation();
-		float BoneScale = 1.0f - ((View->ViewLocation - Location).SizeSquared() / FMath::Square(100.0f));
-		BoneScale = FMath::Clamp(BoneScale, 0.2f, 1.0f);
 		HHandSocketVisProxy* newHitProxy = new HHandSocketVisProxy(Component);
 		newHitProxy->TargetBoneName = "Visualizer";
+		const bool bVisualizerSelected = (CurrentlySelectedBone == newHitProxy->TargetBoneName);
 		PDI->SetHitProxy(newHitProxy);
-		PDI->DrawPoint(Location, CurrentlySelectedBone == newHitProxy->TargetBoneName ? SelectedColor : FLinearColor::Red, 20.f * BoneScale, SDPG_Foreground);
+		PDI->DrawPoint(Location, bVisualizerSelected ? SelectedColor : FLinearColor::Red, ComputeHandleSize(Location, 24.f) + (bVisualizerSelected ? 4.f : 0.f), SDPG_Foreground);
 		PDI->SetHitProxy(NULL);
 		newHitProxy = nullptr;
 
 		newHitProxy = new HHandSocketVisProxy(Component);
 		newHitProxy->TargetBoneName = "HandSocket";
-		BoneScale = 1.0f - ((View->ViewLocation - HandComponent->GetComponentLocation()).SizeSquared() / FMath::Square(100.0f));
-		BoneScale = FMath::Clamp(BoneScale, 0.2f, 1.0f);
+		const bool bSocketSelected = (CurrentlySelectedBone == newHitProxy->TargetBoneName);
+		const FVector SocketLocation = HandComponent->GetComponentLocation();
 		PDI->SetHitProxy(newHitProxy);
-		PDI->DrawPoint(HandComponent->GetComponentLocation(), FLinearColor::Green, 20.f * BoneScale, SDPG_Foreground);
+		PDI->DrawPoint(SocketLocation, bSocketSelected ? SelectedColor : FLinearColor::Green, ComputeHandleSize(SocketLocation, 22.f) + (bSocketSelected ? 4.f : 0.f), SDPG_Foreground);
 		PDI->SetHitProxy(NULL);
 		newHitProxy = nullptr;
 
@@ -219,13 +343,12 @@ void FHandSocketVisualizer::DrawVisualization(const UActorComponent* Component, 
 
 				FTransform BoneTransform = HandComponent->HandVisualizerComponent->GetBoneTransform(i);
 				FVector BoneLoc = BoneTransform.GetLocation();
-				BoneScale = 1.0f - ((View->ViewLocation - BoneLoc).SizeSquared() / FMath::Square(100.0f));
-				BoneScale = FMath::Clamp(BoneScale, 0.1f, 0.9f);
 				newHitProxy = new HHandSocketVisProxy(Component);
 				newHitProxy->TargetBoneName = BoneName;
 				newHitProxy->BoneIdx = i;
+				const bool bBoneSelected = (CurrentlySelectedBone == newHitProxy->TargetBoneName);
 				PDI->SetHitProxy(newHitProxy);
-				PDI->DrawPoint(BoneLoc, CurrentlySelectedBone == newHitProxy->TargetBoneName ? SelectedColor : UnselectedColor, 20.f * BoneScale, SDPG_Foreground);
+				PDI->DrawPoint(BoneLoc, bBoneSelected ? SelectedColor : UnselectedColor, ComputeHandleSize(BoneLoc, 18.f, 0.55f, 0.95f) + (bBoneSelected ? 3.f : 0.f), SDPG_Foreground);
 				PDI->SetHitProxy(NULL);
 				newHitProxy = nullptr;
 			}
@@ -463,6 +586,26 @@ bool FHandSocketVisualizer::HandleInputDelta(FEditorViewportClient* ViewportClie
 			if (bFoundBone)
 			{
 				NotifyPropertyModified(CurrentlyEditingComponent, FindFProperty<FProperty>(UHandSocketComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(UHandSocketComponent, CustomPoseDeltas)));
+			}
+
+			const FVector DeltaTranslateInComponentSpace = DeltaTranslate.IsNearlyZero()
+				                                               ? FVector::ZeroVector
+				                                               : CurrentlyEditingComponent
+					                                                 ->HandVisualizerComponent
+					                                                 ->GetComponentTransform()
+					                                                 .InverseTransformVectorNoScale(DeltaTranslate);
+			const bool bExtendedDeltaChanged = TryApplyExtendedPoseDelta(
+				CurrentlyEditingComponent,
+				CurrentlySelectedBone,
+				DeltaRotateMod,
+				DeltaTranslateInComponentSpace
+			);
+			if (bExtendedDeltaChanged)
+			{
+				if (FProperty* ExtendedProperty = FindFProperty<FProperty>(CurrentlyEditingComponent->GetClass(), TEXT("CustomPoseDeltasExtended")))
+				{
+					NotifyPropertyModified(CurrentlyEditingComponent, ExtendedProperty);
+				}
 			}
 
 			//GEditor->RedrawLevelEditingViewports(true);
